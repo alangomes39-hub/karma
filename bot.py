@@ -14,9 +14,12 @@ from telegram.ext import (
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DB_FILE = "duplicates_media.db"
 
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN não definido nas variáveis de ambiente")
+
 logging.basicConfig(
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
 # ================= DATABASE =================
@@ -24,8 +27,8 @@ async def init_db():
     async with aiosqlite.connect(DB_FILE) as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS media_hashes (
-                chat_id INTEGER,
-                media_hash TEXT,
+                chat_id INTEGER NOT NULL,
+                media_hash TEXT NOT NULL,
                 PRIMARY KEY (chat_id, media_hash)
             )
         """)
@@ -37,23 +40,28 @@ def sha256(data: bytes) -> str:
 
 async def get_media_hash(message) -> str | None:
     """
-    Gera hash APENAS para mídias:
-    fotos, vídeos, documentos e áudios
+    Gera hash SOMENTE para mídias:
+    foto, vídeo, documento e áudio
     """
 
-    if message.photo:
-        file = await message.photo[-1].get_file()
-    elif message.video:
-        file = await message.video.get_file()
-    elif message.document:
-        file = await message.document.get_file()
-    elif message.audio:
-        file = await message.audio.get_file()
-    else:
-        return None  # ignora texto e outros tipos
+    try:
+        if message.photo:
+            file = await message.photo[-1].get_file()
+        elif message.video:
+            file = await message.video.get_file()
+        elif message.document:
+            file = await message.document.get_file()
+        elif message.audio:
+            file = await message.audio.get_file()
+        else:
+            return None
 
-    content = await file.download_as_bytearray()
-    return sha256(content)
+        content = await file.download_as_bytearray()
+        return sha256(content)
+
+    except Exception as e:
+        logging.error(f"Erro ao gerar hash da mídia: {e}")
+        return None
 
 # ================= HANDLER =================
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -64,7 +72,7 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = message.chat_id
     media_hash = await get_media_hash(message)
 
-    # se não for mídia, ignora
+    # Se não for mídia, ignora
     if not media_hash:
         return
 
@@ -90,24 +98,27 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.commit()
 
 # ================= MAIN =================
-async def main():
-    await init_db()
+def main():
+    import asyncio
+
+    asyncio.get_event_loop().run_until_complete(init_db())
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # FILTRO: SOMENTE MÍDIA
-    media_filter = filters.PHOTO | filters.VIDEO | filters.Document.ALL | filters.AUDIO
-
-    app.add_handler(
-        MessageHandler(
-            media_filter,
-            handle_media
-        )
+    media_filter = (
+        filters.PHOTO
+        | filters.VIDEO
+        | filters.Document.ALL
+        | filters.AUDIO
     )
 
-    logging.info("🤖 Bot anti-duplicados (MODO MÍDIA) iniciado...")
-    await app.run_polling()
+    app.add_handler(
+        MessageHandler(media_filter, handle_media)
+    )
 
+    logging.info("🤖 Bot anti-duplicados (MODO MÍDIA) iniciado automaticamente")
+    app.run_polling()
+
+# ================= ENTRY =================
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    main()
