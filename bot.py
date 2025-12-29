@@ -12,7 +12,7 @@ from telegram.ext import (
 
 # ================= CONFIG =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-DB_FILE = "duplicates.db"
+DB_FILE = "duplicates_media.db"
 
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
@@ -23,74 +23,69 @@ logging.basicConfig(
 async def init_db():
     async with aiosqlite.connect(DB_FILE) as db:
         await db.execute("""
-            CREATE TABLE IF NOT EXISTS messages (
+            CREATE TABLE IF NOT EXISTS media_hashes (
                 chat_id INTEGER,
-                content_hash TEXT,
-                PRIMARY KEY (chat_id, content_hash)
+                media_hash TEXT,
+                PRIMARY KEY (chat_id, media_hash)
             )
         """)
         await db.commit()
 
-# ================= HASH FUNCTIONS =================
+# ================= HASH =================
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
-async def generate_message_hash(message) -> str | None:
-    if message.text:
-        return sha256(message.text.encode())
+async def get_media_hash(message) -> str | None:
+    """
+    Gera hash APENAS para mídias:
+    fotos, vídeos, documentos e áudios
+    """
 
     if message.photo:
         file = await message.photo[-1].get_file()
-        content = await file.download_as_bytearray()
-        return sha256(content)
-
-    if message.video:
+    elif message.video:
         file = await message.video.get_file()
-        content = await file.download_as_bytearray()
-        return sha256(content)
-
-    if message.document:
+    elif message.document:
         file = await message.document.get_file()
-        content = await file.download_as_bytearray()
-        return sha256(content)
-
-    if message.audio:
+    elif message.audio:
         file = await message.audio.get_file()
-        content = await file.download_as_bytearray()
-        return sha256(content)
+    else:
+        return None  # ignora texto e outros tipos
 
-    return None
+    content = await file.download_as_bytearray()
+    return sha256(content)
 
 # ================= HANDLER =================
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message or update.channel_post
     if not message:
         return
 
     chat_id = message.chat_id
-    msg_hash = await generate_message_hash(message)
+    media_hash = await get_media_hash(message)
 
-    if not msg_hash:
+    # se não for mídia, ignora
+    if not media_hash:
         return
 
     async with aiosqlite.connect(DB_FILE) as db:
         cursor = await db.execute(
-            "SELECT 1 FROM messages WHERE chat_id = ? AND content_hash = ?",
-            (chat_id, msg_hash)
+            "SELECT 1 FROM media_hashes WHERE chat_id = ? AND media_hash = ?",
+            (chat_id, media_hash)
         )
         exists = await cursor.fetchone()
 
         if exists:
             try:
                 await message.delete()
-                logging.info(f"Mensagem duplicada deletada no chat {chat_id}")
+                logging.info(f"🗑️ Mídia duplicada deletada | Chat {chat_id}")
             except Exception as e:
-                logging.error(f"Erro ao deletar mensagem: {e}")
+                logging.error(f"Erro ao deletar mídia: {e}")
             return
 
         await db.execute(
-            "INSERT INTO messages (chat_id, content_hash) VALUES (?, ?)",
-            (chat_id, msg_hash)
+            "INSERT INTO media_hashes (chat_id, media_hash) VALUES (?, ?)",
+            (chat_id, media_hash)
         )
         await db.commit()
 
@@ -100,14 +95,17 @@ async def main():
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # FILTRO: SOMENTE MÍDIA
+    media_filter = filters.PHOTO | filters.VIDEO | filters.Document.ALL | filters.AUDIO
+
     app.add_handler(
         MessageHandler(
-            filters.ALL,
-            handle_message
+            media_filter,
+            handle_media
         )
     )
 
-    logging.info("🤖 Bot anti-duplicados iniciado...")
+    logging.info("🤖 Bot anti-duplicados (MODO MÍDIA) iniciado...")
     await app.run_polling()
 
 if __name__ == "__main__":
